@@ -3,14 +3,12 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 from datetime import datetime
-import re
 import os
 
 # --- CONFIGURATION & BDD ---
 st.set_page_config(page_title="GV2 Management System", layout="wide", page_icon="📊")
 
-VERSION = "2.2"
-# Formatage de la date pour le nom du fichier (ex: 01_03_2026)
+VERSION = "2.3"
 DATE_FILE = datetime.now().strftime("%d_%m_%Y")
 DB_PATH = 'gv2_data.db'
 
@@ -51,19 +49,17 @@ def reset_form():
     if "submitted" in st.session_state:
         del st.session_state["submitted"]
 
-@st.dialog("⚠️ RESTAURATION DU SYSTÈME")
+@st.dialog("⚠️ RESTAURATION")
 def confirm_restore_dialog(uploaded_file):
-    st.error("### ATTENTION : ACTION CRITIQUE")
-    st.write(f"Fichier : **{uploaded_file.name}**")
-    st.write("L'importation remplacera TOUTES les données actuelles.")
-    if st.button("🔥 CONFIRMER LE REMPLACEMENT", type="primary", use_container_width=True):
+    st.error("### ATTENTION : ÉCRASEMENT DES DONNÉES")
+    if st.button("🔥 CONFIRMER", type="primary", use_container_width=True):
         with open(DB_PATH, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.success("Système restauré !"); st.rerun()
+        st.success("Base restaurée !"); st.rerun()
 
-@st.dialog("🗑️ CONFIRMER LA SUPPRESSION")
+@st.dialog("🗑️ SUPPRESSION")
 def confirm_delete_dialog(ids):
-    st.warning(f"Supprimer définitivement {len(ids)} prestation(s) ?")
+    st.warning(f"Supprimer {len(ids)} prestation(s) ?")
     if st.button("OUI, SUPPRIMER", type="primary", use_container_width=True):
         conn = get_connection()
         conn.executemany("DELETE FROM prestations WHERE id = ?", [(x,) for x in ids])
@@ -74,7 +70,7 @@ if os.path.exists("logo_gv2.png"):
     st.sidebar.image("logo_gv2.png", use_container_width=True)
 st.sidebar.markdown(f"### 🛠️ GV2 Management")
 st.sidebar.caption(f"**Version :** {VERSION}")
-menu = st.sidebar.radio("Navigation", ["📝 Encodage", "📊 Dashboard", "🛠️ Gestion", "⚙️ Paramètres", "ℹ️ Aide"])
+menu = st.sidebar.radio("Navigation", ["📝 Encodage", "📊 Dashboard", "🛠️ Gestion", "⚙️ Paramètres"])
 
 # --- 1. ENCODAGE ---
 if menu == "📝 Encodage":
@@ -85,7 +81,7 @@ if menu == "📝 Encodage":
 
     if st.session_state.get("submitted"):
         st.success("✅ Enregistré !")
-        if st.button("➕ Nouveau"): reset_form(); st.rerun()
+        if st.button("➕ Saisir une autre prestation"): reset_form(); st.rerun()
     else:
         with st.container(border=True):
             c1, c2 = st.columns(2)
@@ -104,7 +100,7 @@ if menu == "📝 Encodage":
                     conn.execute("INSERT INTO prestations (date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne) VALUES (?,?,?,?,?,?,?,?,?,?)", 
                                  (d.strftime("%d/%m/%Y"), col, cli, desc, ref, t, tc, t*tc, ti, t*ti))
                     conn.commit(); st.session_state["submitted"] = True; st.rerun()
-                else: st.error("Champs manquants.")
+                else: st.error("Champs obligatoires manquants.")
 
 # --- 2. DASHBOARD ---
 elif menu == "📊 Dashboard":
@@ -123,55 +119,61 @@ elif menu == "📊 Dashboard":
         cl = st.sidebar.multiselect("Clients", sorted(df['client'].unique()), default=df['client'].unique())
         
         df_f = df[(df['Année'].isin(y)) & (df['Mois'].isin(m)) & (df['collab'].isin(co)) & (df['client'].isin(cl))]
+        
         if not df_f.empty:
             k1, k2, k3 = st.columns(3)
-            k1.metric("Heures", f"{df_f['temps'].sum()} h")
-            k2.metric("CA HT", f"{df_f['fact_client'].sum():,.2f} €")
-            k3.metric("Marge", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
+            k1.metric("Heures", f"{df_f['temps'].sum():.2f} h")
+            k2.metric("CA Client HT", f"{df_f['fact_client'].sum():,.2f} €")
+            k3.metric("Marge GV2", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
+            
+            # --- AJOUT : EXPORTATION FILTRÉE ---
+            csv = df_f.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+            st.download_button("📥 Exporter cette sélection (CSV)", csv, f"export_gv2_{DATE_FILE}.csv", "text/csv")
+            
             st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=cmap), use_container_width=True)
-        else: st.warning("Filtres vides.")
+        else: st.warning("Sélection vide.")
+    else: st.info("Base vide.")
 
-# --- 3. GESTION (AVEC SUPPRESSION) ---
+# --- 3. GESTION ---
 elif menu == "🛠️ Gestion":
-    st.header("🛠️ Gestion & Suppression")
+    st.header("🛠️ Gestion des prestations")
     conn = get_connection()
     df_edit = pd.read_sql("SELECT * FROM prestations ORDER BY id DESC", conn)
     if not df_edit.empty:
         df_edit.insert(0, '🗑️', False)
         edited = st.data_editor(df_edit, disabled=["id"], hide_index=True)
         c1, c2 = st.columns(2)
-        if c1.button("💾 Sauvegarder modifications"):
+        if c1.button("💾 Sauvegarder les modifications"):
             for _, r in edited[edited['🗑️'] == False].iterrows():
                 conn.execute("UPDATE prestations SET date=?, collab=?, client=?, description=?, temps=? WHERE id=?", (r['date'], r['collab'], r['client'], r['description'], r['temps'], r['id']))
-            conn.commit(); st.success("Mis à jour !"); st.rerun()
+            conn.commit(); st.success("Données mises à jour !"); st.rerun()
         if not edited[edited['🗑️']].empty and c2.button("🔥 Supprimer sélection"):
             confirm_delete_dialog(edited[edited['🗑️']]['id'].tolist())
 
-# --- 4. PARAMÈTRES (EDITION CLIENTS/COLLAB RÉTABLIE) ---
+# --- 4. PARAMÈTRES ---
 elif menu == "⚙️ Paramètres":
     st.header("⚙️ Configuration")
     conn = get_connection()
     
-    # Export/Import
+    # Export/Import Complet DB
     c1, c2 = st.columns(2)
     with c1:
         with st.container(border=True):
-            st.subheader("📤 Export")
+            st.subheader("📤 Backup Complet (.db)")
             if os.path.exists(DB_PATH):
                 with open(DB_PATH, "rb") as f:
-                    st.download_button(f"📥 Télécharger gv2_{DATE_FILE}.db", f, f"backup_gv2_{DATE_FILE}.db", use_container_width=True)
+                    st.download_button(f"📥 Télécharger gv2_data_{DATE_FILE}.db", f, f"backup_gv2_{DATE_FILE}.db", use_container_width=True)
     with c2:
         with st.container(border=True):
-            st.subheader("📥 Import")
-            up = st.file_uploader("Fichier .db", type="db")
+            st.subheader("📥 Restauration (.db)")
+            up = st.file_uploader("Fichier backup_gv2_... .db", type="db")
             if up and st.button("🚀 Restaurer"): confirm_restore_dialog(up)
 
     st.divider()
-    # RÉTABLISSEMENT DE L'ÉDITION DES LISTES
     t1, t2 = st.tabs(["👥 Collaborateurs", "🏢 Clients"])
     with t1:
-        with st.form("new_co"):
-            n = st.text_input("Nom du Collab")
+        with st.form("new_co", clear_on_submit=True):
+            n = st.text_input("Nom")
             if st.form_submit_button("Ajouter"):
                 if n: conn.execute("INSERT INTO collaborateurs (nom, couleur) VALUES (?,?)", (n.strip(), "#3498db")); conn.commit(); st.rerun()
         for r in conn.execute("SELECT id, nom, couleur FROM collaborateurs ORDER BY nom").fetchall():
@@ -179,11 +181,10 @@ elif menu == "⚙️ Paramètres":
             new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"c_{r[0]}", label_visibility="collapsed")
             if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE collaborateurs SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
             cols[1].write(r[1])
-            if cols[2].button("Suppr", key=f"dc_{r[0]}"): conn.execute("DELETE FROM collaborateurs WHERE id=?", (r[0],)); conn.commit(); st.rerun()
-
+            if cols[2].button("🗑️", key=f"dc_{r[0]}"): conn.execute("DELETE FROM collaborateurs WHERE id=?", (r[0],)); conn.commit(); st.rerun()
     with t2:
-        with st.form("new_cl"):
-            n = st.text_input("Nom du Client")
+        with st.form("new_cl", clear_on_submit=True):
+            n = st.text_input("Nom Client")
             if st.form_submit_button("Ajouter"):
                 if n: conn.execute("INSERT INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (n.strip(), 80.0, "#e67e22")); conn.commit(); st.rerun()
         for r in conn.execute("SELECT id, nom, couleur FROM clients ORDER BY nom").fetchall():
@@ -191,8 +192,4 @@ elif menu == "⚙️ Paramètres":
             new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"l_{r[0]}", label_visibility="collapsed")
             if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE clients SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
             cols[1].write(r[1])
-            if cols[2].button("Suppr", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
-
-# --- 5. AIDE ---
-elif menu == "ℹ️ Aide":
-    st.info("Système GV2 Management - Dashboard complet, gestion des couleurs et backups datés.")
+            if cols[2].button("🗑️", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
