@@ -152,11 +152,10 @@ elif menu == "🛠️ Gestion":
         if not edited[edited['🗑️']].empty and c2.button("🔥 Supprimer"):
             confirm_delete_dialog(edited[edited['🗑️']]['id'].tolist())
 
-# --- 4. PARAMÈTRES (AVEC IMPORT CSV) ---
+# --- 4. PARAMÈTRES (IMPORT NETTOYÉ) ---
 elif menu == "⚙️ Paramètres":
     st.header("⚙️ Configuration")
     conn = get_connection()
-    
     tab_maint, tab_listes, tab_csv = st.tabs(["💾 Maintenance DB", "👥 Listes & Couleurs", "📥 Import CSV"])
     
     with tab_maint:
@@ -197,18 +196,26 @@ elif menu == "⚙️ Paramètres":
                 if cols[2].button("🗑️", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
 
     with tab_csv:
-        st.subheader("📥 Importation de masse via CSV")
-        st.info("Le fichier doit contenir les colonnes exactes : date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne")
-        up_csv = st.file_uploader("Choisir un fichier CSV", type="csv")
+        st.subheader("📥 Importation CSV (Nettoyage automatique)")
+        st.info("Colonnes requises : date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne")
+        up_csv = st.file_uploader("Choisir CSV", type="csv")
         if up_csv:
+            # Nettoyage automatique du BOM et des espaces dans les noms de colonnes
             df_imp = pd.read_csv(up_csv, sep=None, engine='python')
-            st.write("Aperçu des données :", df_imp.head())
+            df_imp.columns = df_imp.columns.str.strip().str.lower().str.replace('﻿', '') 
+            
+            st.write("Colonnes détectées :", list(df_imp.columns))
+            st.dataframe(df_imp.head())
+            
             if st.button("✅ Lancer l'importation"):
                 try:
-                    df_imp.to_sql('prestations', conn, if_exists='append', index=False)
-                    st.success(f"Importation de {len(df_imp)} lignes réussie !"); st.rerun()
+                    # On ne garde que les colonnes qui existent dans la BDD pour éviter les erreurs
+                    cols_bdd = ['date', 'collab', 'client', 'description', 'mission_ref', 'temps', 'tarif_client', 'fact_client', 'tarif_interne', 'fact_interne']
+                    df_final = df_imp[cols_bdd]
+                    df_final.to_sql('prestations', conn, if_exists='append', index=False)
+                    st.success(f"Importation de {len(df_final)} lignes réussie !"); st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur : {e}")
+                    st.error(f"Erreur de structure : {e}")
 
 # --- 5. AIDE & INFOS ---
 elif menu == "ℹ️ Aide & Infos":
@@ -220,7 +227,6 @@ elif menu == "ℹ️ Aide & Infos":
     * **📥 Import/Export** : 
         * Export CSV filtré (Dashboard).
         * Backup complet daté `.db` (Paramètres).
-        * **Import CSV** pour charger des historiques de données.
+        * **Import CSV** avec nettoyage automatique des caractères invisibles (BOM).
     * **🛠️ Gestion** : Modification directe et suppression groupée.
-    * **🎨 Identité** : Couleurs personnalisables par collaborateur/client.
     """)
