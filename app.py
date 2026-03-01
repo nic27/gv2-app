@@ -8,7 +8,7 @@ import os
 # --- CONFIGURATION & BDD ---
 st.set_page_config(page_title="GV2 Management System", layout="wide", page_icon="📊")
 
-VERSION = "2.3"
+VERSION = "1.0"
 DATE_FILE = datetime.now().strftime("%d_%m_%Y")
 DB_PATH = 'gv2_data.db'
 
@@ -108,17 +108,35 @@ elif menu == "📊 Dashboard":
     df = pd.read_sql("SELECT * FROM prestations", get_connection())
     cmap = get_color_map()
     if not df.empty:
+        # Conversion robuste de la date
         df['date_dt'] = pd.to_datetime(df['date'], format='%d/%m/%Y', dayfirst=True)
-        df['Année'] = df['date_dt'].dt.strftime('%Y')
-        df['Mois'] = df['date_dt'].dt.strftime('%m/%Y')
+        
+        # Création des colonnes de filtrage triables
+        df['Année'] = df['date_dt'].dt.year
+        df['Mois_num'] = df['date_dt'].dt.month
+        df['Mois_Label'] = df['date_dt'].dt.strftime('%m/%Y')
         
         st.sidebar.header("🔍 Filtres")
-        y = st.sidebar.multiselect("Années", sorted(df['Année'].unique(), reverse=True), default=df['Année'].unique())
-        m = st.sidebar.multiselect("Mois", sorted(df['Mois'].unique(), reverse=True), default=df['Mois'].unique())
-        co = st.sidebar.multiselect("Collab", sorted(df['collab'].unique()), default=df['collab'].unique())
-        cl = st.sidebar.multiselect("Clients", sorted(df['client'].unique()), default=df['client'].unique())
         
-        df_f = df[(df['Année'].isin(y)) & (df['Mois'].isin(m)) & (df['collab'].isin(co)) & (df['client'].isin(cl))]
+        # Filtre Année (Trié numériquement)
+        y_list = sorted(df['Année'].unique(), reverse=True)
+        sel_y = st.sidebar.multiselect("Années", y_list, default=y_list)
+        
+        # Filtre Mois (Trié chronologiquement)
+        # On récupère les paires (Label, DateObj) pour trier par date réelle et non par texte
+        mois_options = df[df['Année'].isin(sel_y)].sort_values('date_dt', ascending=False)['Mois_Label'].unique()
+        sel_m = st.sidebar.multiselect("Mois", mois_options, default=mois_options)
+        
+        sel_co = st.sidebar.multiselect("Collab", sorted(df['collab'].unique()), default=df['collab'].unique())
+        sel_cl = st.sidebar.multiselect("Clients", sorted(df['client'].unique()), default=df['client'].unique())
+        
+        # Application des filtres
+        df_f = df[
+            (df['Année'].isin(sel_y)) & 
+            (df['Mois_Label'].isin(sel_m)) & 
+            (df['collab'].isin(sel_co)) & 
+            (df['client'].isin(sel_cl))
+        ]
         
         if not df_f.empty:
             k1, k2, k3 = st.columns(3)
@@ -126,11 +144,12 @@ elif menu == "📊 Dashboard":
             k2.metric("CA Client HT", f"{df_f['fact_client'].sum():,.2f} €")
             k3.metric("Marge GV2", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
             
-            # --- AJOUT : EXPORTATION FILTRÉE ---
             csv = df_f.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Exporter cette sélection (CSV)", csv, f"export_gv2_{DATE_FILE}.csv", "text/csv")
+            st.download_button("📥 Exporter sélection (CSV)", csv, f"export_gv2_{DATE_FILE}.csv", "text/csv")
             
-            st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=cmap), use_container_width=True)
+            st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), 
+                                   x='client', y='fact_client', color='client', 
+                                   color_discrete_map=cmap, title="CA par Client"), use_container_width=True)
         else: st.warning("Sélection vide.")
     else: st.info("Base vide.")
 
@@ -145,7 +164,8 @@ elif menu == "🛠️ Gestion":
         c1, c2 = st.columns(2)
         if c1.button("💾 Sauvegarder les modifications"):
             for _, r in edited[edited['🗑️'] == False].iterrows():
-                conn.execute("UPDATE prestations SET date=?, collab=?, client=?, description=?, temps=? WHERE id=?", (r['date'], r['collab'], r['client'], r['description'], r['temps'], r['id']))
+                conn.execute("UPDATE prestations SET date=?, collab=?, client=?, description=?, temps=? WHERE id=?", 
+                             (r['date'], r['collab'], r['client'], r['description'], r['temps'], r['id']))
             conn.commit(); st.success("Données mises à jour !"); st.rerun()
         if not edited[edited['🗑️']].empty and c2.button("🔥 Supprimer sélection"):
             confirm_delete_dialog(edited[edited['🗑️']]['id'].tolist())
@@ -155,7 +175,6 @@ elif menu == "⚙️ Paramètres":
     st.header("⚙️ Configuration")
     conn = get_connection()
     
-    # Export/Import Complet DB
     c1, c2 = st.columns(2)
     with c1:
         with st.container(border=True):
@@ -178,8 +197,9 @@ elif menu == "⚙️ Paramètres":
                 if n: conn.execute("INSERT INTO collaborateurs (nom, couleur) VALUES (?,?)", (n.strip(), "#3498db")); conn.commit(); st.rerun()
         for r in conn.execute("SELECT id, nom, couleur FROM collaborateurs ORDER BY nom").fetchall():
             cols = st.columns([1, 3, 1])
-            new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"c_{r[0]}", label_visibility="collapsed")
-            if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE collaborateurs SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
+            curr_c = FORCED_COLORS.get(r[1], r[2])
+            new_c = cols[0].color_picker("Col", curr_c, key=f"c_{r[0]}", label_visibility="collapsed")
+            if new_c != curr_c: conn.execute("UPDATE collaborateurs SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
             cols[1].write(r[1])
             if cols[2].button("🗑️", key=f"dc_{r[0]}"): conn.execute("DELETE FROM collaborateurs WHERE id=?", (r[0],)); conn.commit(); st.rerun()
     with t2:
@@ -189,7 +209,8 @@ elif menu == "⚙️ Paramètres":
                 if n: conn.execute("INSERT INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (n.strip(), 80.0, "#e67e22")); conn.commit(); st.rerun()
         for r in conn.execute("SELECT id, nom, couleur FROM clients ORDER BY nom").fetchall():
             cols = st.columns([1, 3, 1])
-            new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"l_{r[0]}", label_visibility="collapsed")
-            if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE clients SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
+            curr_c = FORCED_COLORS.get(r[1], r[2])
+            new_c = cols[0].color_picker("Col", curr_c, key=f"l_{r[0]}", label_visibility="collapsed")
+            if new_c != curr_c: conn.execute("UPDATE clients SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
             cols[1].write(r[1])
             if cols[2].button("🗑️", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
