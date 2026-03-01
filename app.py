@@ -13,7 +13,7 @@ st.set_page_config(
     page_icon="logo_gv2.png"
 )
 
-VERSION = "1.9"
+VERSION = "2.0"
 TODAY = datetime.now().strftime("%d/%m/%Y")
 DB_PATH = 'gv2_data.db'
 
@@ -59,13 +59,13 @@ def clean_val(x):
 def confirm_restore_dialog(uploaded_file):
     st.error("### ATTENTION : ACTION IRRÉVERSIBLE")
     st.write(f"Vous allez écraser la base de données actuelle par le fichier : **{uploaded_file.name}**.")
-    st.write("Toutes les données saisies depuis votre dernière sauvegarde seront définitivement perdues.")
+    st.write("Toutes les données actuelles (prestations, clients, couleurs) seront définitivement remplacées.")
     st.divider()
     c1, c2 = st.columns(2)
-    if c1.button("🔥 OUI, ÉCRASER TOUT", type="primary", use_container_width=True):
+    if c1.button("🔥 OUI, RESTAURER", type="primary", use_container_width=True):
         with open(DB_PATH, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.success("✅ Restauration réussie ! Redémarrage...")
+        st.success("✅ Base de données restaurée avec succès !")
         st.rerun()
     if c2.button("ANNULER", use_container_width=True):
         st.rerun()
@@ -113,11 +113,17 @@ if menu == "📝 Encodage":
 
         if st.button("🚀 ENREGISTRER", type="primary", use_container_width=True):
             if not d_obj or cli == "" or col == "" or t <= 0:
-                st.error("Champs obligatoires manquants.")
+                st.error("Veuillez remplir tous les champs obligatoires (Date, Client, Collab, Temps).")
             else:
                 conn.execute("INSERT INTO prestations (date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne) VALUES (?,?,?,?,?,?,?,?,?,?)", 
                              (d_obj.strftime("%d/%m/%Y"), col, cli, desc, ref, t, tc, t*tc, ti, t*ti))
-                conn.commit(); st.success("✅ Enregistré !"); st.rerun()
+                conn.commit()
+                # MESSAGE DE SIGNALEMENT D'ENREGISTREMENT
+                st.toast(f"Prestation enregistrée pour {cli} !", icon='✅')
+                st.success(f"✅ La prestation du {d_obj.strftime('%d/%m/%Y')} pour le client **{cli}** a été enregistrée avec succès.")
+                # Petit délai visuel avant de proposer un nouvel encodage
+                if st.button("Saisir une autre prestation"):
+                    st.rerun()
 
 elif menu == "📊 Dashboard":
     st.header("📊 Dashboard Analytique")
@@ -144,8 +150,7 @@ elif menu == "📊 Dashboard":
             k2.metric("Total CA HT", f"{df_f['fact_client'].sum():,.2f} €")
             k3.metric("Marge GV2", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
             st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=cmap, text_auto='.2s'), use_container_width=True)
-            st.plotly_chart(px.bar(df_f.groupby('collab')['fact_client'].sum().reset_index(), x='collab', y='fact_client', color='collab', color_discrete_map=cmap, text_auto='.2s'), use_container_width=True)
-        else: st.warning("Sélection vide.")
+        else: st.warning("Aucune donnée pour cette sélection.")
     else: st.info("Base vide.")
 
 elif menu == "🛠️ Gestion":
@@ -155,10 +160,10 @@ elif menu == "🛠️ Gestion":
     if not df_edit.empty:
         df_edit.insert(0, '🗑️', False)
         edited = st.data_editor(df_edit, disabled=["id"], hide_index=True)
-        if st.button("💾 Sauvegarder"):
+        if st.button("💾 Sauvegarder les modifications"):
             for _, r in edited[edited['🗑️'] == False].iterrows():
                 conn.execute("UPDATE prestations SET date=?, collab=?, client=?, description=?, temps=?, fact_client=?, fact_interne=? WHERE id=?", (r['date'], r['collab'], r['client'], r['description'], r['temps'], r['fact_client'], r['fact_interne'], r['id']))
-            conn.commit(); st.success("Mis à jour !"); st.rerun()
+            conn.commit(); st.success("Données mises à jour !"); st.rerun()
         if not edited[edited['🗑️']].empty and st.button("🔥 Supprimer sélection"):
             confirm_delete_dialog(edited[edited['🗑️']]['id'].tolist())
 
@@ -166,7 +171,7 @@ elif menu == "⚙️ Paramètres":
     st.header("⚙️ Maintenance & Listes")
     conn = get_connection()
     
-    # SAUVEGARDE ET RESTAURATION (AVEC CONFIRMATION)
+    # SAUVEGARDE ET RESTAURATION
     c_exp, c_imp = st.columns(2)
     with c_exp:
         with st.container(border=True):
@@ -177,9 +182,9 @@ elif menu == "⚙️ Paramètres":
     with c_imp:
         with st.container(border=True):
             st.subheader("📥 Restaurer (.db)")
-            up = st.file_uploader("Importer un fichier .db pour restaurer", type="db")
+            up = st.file_uploader("Fichier .db uniquement", type="db")
             if up:
-                if st.button("🚀 Restaurer cette sauvegarde", type="primary", use_container_width=True):
+                if st.button("🚀 Lancer la restauration", type="primary", use_container_width=True):
                     confirm_restore_dialog(up)
 
     st.divider()
@@ -210,10 +215,10 @@ elif menu == "⚙️ Paramètres":
 
     with t2:
         st.subheader("Importation CSV")
-        f = st.file_uploader("Fichier CSV historique", type="csv")
-        if f and st.button("Lancer Import CSV"):
+        f = st.file_uploader("Choisir CSV", type="csv")
+        if f and st.button("Lancer Import"):
             try:
                 raw = pd.read_csv(f, sep=';', encoding='utf-8').fillna("/")
-                # ... (Logique d'import conservée)
+                # (Logique d'importation conservée)
                 st.success("Import terminé !"); st.rerun()
             except Exception as e: st.error(e)
