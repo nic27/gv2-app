@@ -4,6 +4,7 @@ import sqlite3
 import plotly.express as px
 from datetime import datetime
 import os
+import io
 
 # --- CONFIGURATION & BDD ---
 st.set_page_config(page_title="GV2 Management System", layout="wide", page_icon="📊")
@@ -52,7 +53,6 @@ def reset_form():
 @st.dialog("⚠️ RESTAURATION")
 def confirm_restore_dialog(uploaded_file):
     st.error("### ATTENTION : ÉCRASEMENT DES DONNÉES")
-    st.write("Le contenu actuel sera définitivement remplacé par la sauvegarde.")
     if st.button("🔥 CONFIRMER", type="primary", use_container_width=True):
         with open(DB_PATH, "wb") as f:
             f.write(uploaded_file.getbuffer())
@@ -116,11 +116,8 @@ elif menu == "📊 Dashboard":
         st.sidebar.header("🔍 Filtres")
         y_list = sorted(df['Année'].unique(), reverse=True)
         sel_y = st.sidebar.multiselect("Années", y_list, default=y_list)
-        
-        # Tri chronologique des mois
         mois_options = df[df['Année'].isin(sel_y)].sort_values('date_dt', ascending=False)['Mois_Label'].unique()
         sel_m = st.sidebar.multiselect("Mois", mois_options, default=mois_options)
-        
         sel_co = st.sidebar.multiselect("Collab", sorted(df['collab'].unique()), default=df['collab'].unique())
         sel_cl = st.sidebar.multiselect("Clients", sorted(df['client'].unique()), default=df['client'].unique())
         
@@ -155,57 +152,75 @@ elif menu == "🛠️ Gestion":
         if not edited[edited['🗑️']].empty and c2.button("🔥 Supprimer"):
             confirm_delete_dialog(edited[edited['🗑️']]['id'].tolist())
 
-# --- 4. PARAMÈTRES ---
+# --- 4. PARAMÈTRES (AVEC IMPORT CSV) ---
 elif menu == "⚙️ Paramètres":
     st.header("⚙️ Configuration")
     conn = get_connection()
-    c1, c2 = st.columns(2)
-    with c1:
-        with st.container(border=True):
+    
+    tab_maint, tab_listes, tab_csv = st.tabs(["💾 Maintenance DB", "👥 Listes & Couleurs", "📥 Import CSV"])
+    
+    with tab_maint:
+        c1, c2 = st.columns(2)
+        with c1:
             st.subheader("📤 Export .db")
             if os.path.exists(DB_PATH):
                 with open(DB_PATH, "rb") as f:
                     st.download_button(f"📥 Backup_{DATE_FILE}.db", f, f"backup_gv2_{DATE_FILE}.db", use_container_width=True)
-    with c2:
-        with st.container(border=True):
-            st.subheader("📥 Import .db")
-            up = st.file_uploader("Fichier .db", type="db")
-            if up and st.button("🚀 Restaurer"): confirm_restore_dialog(up)
+        with c2:
+            st.subheader("📥 Restauration .db")
+            up = st.file_uploader("Fichier .db", type="db", key="db_up")
+            if up and st.button("🚀 Restaurer", key="btn_db"): confirm_restore_dialog(up)
 
-    st.divider()
-    t1, t2 = st.tabs(["👥 Collaborateurs", "🏢 Clients"])
-    with t1:
-        with st.form("n_co", clear_on_submit=True):
-            n = st.text_input("Nom")
-            if st.form_submit_button("Ajouter"):
-                if n: conn.execute("INSERT INTO collaborateurs (nom, couleur) VALUES (?,?)", (n.strip(), "#3498db")); conn.commit(); st.rerun()
-        for r in conn.execute("SELECT id, nom, couleur FROM collaborateurs ORDER BY nom").fetchall():
-            cols = st.columns([1, 3, 1])
-            new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"c_{r[0]}", label_visibility="collapsed")
-            if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE collaborateurs SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
-            cols[1].write(r[1])
-            if cols[2].button("🗑️", key=f"dc_{r[0]}"): conn.execute("DELETE FROM collaborateurs WHERE id=?", (r[0],)); conn.commit(); st.rerun()
-    with t2:
-        with st.form("n_cl", clear_on_submit=True):
-            n = st.text_input("Nom Client")
-            if st.form_submit_button("Ajouter"):
-                if n: conn.execute("INSERT INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (n.strip(), 80.0, "#e67e22")); conn.commit(); st.rerun()
-        for r in conn.execute("SELECT id, nom, couleur FROM clients ORDER BY nom").fetchall():
-            cols = st.columns([1, 3, 1])
-            new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"l_{r[0]}", label_visibility="collapsed")
-            if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE clients SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
-            cols[1].write(r[1])
-            if cols[2].button("🗑️", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
+    with tab_listes:
+        t_co, t_cl = st.columns(2)
+        with t_co:
+            with st.form("n_co", clear_on_submit=True):
+                n = st.text_input("Ajouter Collaborateur")
+                if st.form_submit_button("Ajouter"):
+                    if n: conn.execute("INSERT INTO collaborateurs (nom, couleur) VALUES (?,?)", (n.strip(), "#3498db")); conn.commit(); st.rerun()
+            for r in conn.execute("SELECT id, nom, couleur FROM collaborateurs ORDER BY nom").fetchall():
+                cols = st.columns([1, 3, 1])
+                new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"c_{r[0]}", label_visibility="collapsed")
+                if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE collaborateurs SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
+                cols[1].write(r[1])
+                if cols[2].button("🗑️", key=f"dc_{r[0]}"): conn.execute("DELETE FROM collaborateurs WHERE id=?", (r[0],)); conn.commit(); st.rerun()
+        with t_cl:
+            with st.form("n_cl", clear_on_submit=True):
+                n = st.text_input("Ajouter Client")
+                if st.form_submit_button("Ajouter"):
+                    if n: conn.execute("INSERT INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (n.strip(), 80.0, "#e67e22")); conn.commit(); st.rerun()
+            for r in conn.execute("SELECT id, nom, couleur FROM clients ORDER BY nom").fetchall():
+                cols = st.columns([1, 3, 1])
+                new_c = cols[0].color_picker("Col", FORCED_COLORS.get(r[1], r[2]), key=f"l_{r[0]}", label_visibility="collapsed")
+                if new_c != FORCED_COLORS.get(r[1], r[2]): conn.execute("UPDATE clients SET couleur=? WHERE id=?", (new_c, r[0])); conn.commit(); st.rerun()
+                cols[1].write(r[1])
+                if cols[2].button("🗑️", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
+
+    with tab_csv:
+        st.subheader("📥 Importation de masse via CSV")
+        st.info("Le fichier doit contenir les colonnes exactes : date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne")
+        up_csv = st.file_uploader("Choisir un fichier CSV", type="csv")
+        if up_csv:
+            df_imp = pd.read_csv(up_csv, sep=None, engine='python')
+            st.write("Aperçu des données :", df_imp.head())
+            if st.button("✅ Lancer l'importation"):
+                try:
+                    df_imp.to_sql('prestations', conn, if_exists='append', index=False)
+                    st.success(f"Importation de {len(df_imp)} lignes réussie !"); st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
 
 # --- 5. AIDE & INFOS ---
 elif menu == "ℹ️ Aide & Infos":
-    st.header("ℹ️ Fonctionnalités du Système")
+    st.header("ℹ️ Aide & Fonctionnalités")
     st.markdown("""
-    ### 🚀 Capacités Clés
-    * **📝 Encodage** : Saisie des prestations avec remise à zéro automatique pour éviter les doublons.
-    * **📊 Dashboard** : Analyse par **Année, Mois, Collab et Client**. Le tri des mois est chronologique.
-    * **📥 Export CSV** : Bouton dans le Dashboard pour extraire uniquement les données filtrées.
-    * **🛠️ Gestion** : Modification en ligne et suppression de lignes par sélection groupée.
-    * **⚙️ Maintenance** : Exportation de la base complète avec la date dans le nom (`backup_gv2_JJ_MM_AAAA.db`) et restauration sécurisée par fenêtre de confirmation.
-    * **👥 Personnalisation** : Gestion des listes de noms et des couleurs d'affichage dans les graphiques.
+    ### 🚀 Liste des fonctionnalités (Version 1.0)
+    * **📝 Encodage** : Saisie propre avec réinitialisation complète des champs après validation.
+    * **📊 Dashboard** : Filtres croisés par **Année, Mois (chronologique), Collab et Client**.
+    * **📥 Import/Export** : 
+        * Export CSV filtré (Dashboard).
+        * Backup complet daté `.db` (Paramètres).
+        * **Import CSV** pour charger des historiques de données.
+    * **🛠️ Gestion** : Modification directe et suppression groupée.
+    * **🎨 Identité** : Couleurs personnalisables par collaborateur/client.
     """)
