@@ -110,7 +110,7 @@ elif menu == "📊 Dashboard":
             st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=get_dynamic_colors()), use_container_width=True)
     else: st.info("Aucune donnée.")
 
-# --- 3. GESTION (MODIF & SUPPRESSION) ---
+# --- 3. GESTION ---
 elif menu == "🛠️ Gestion":
     st.header("🛠️ Gestion")
     conn = get_connection()
@@ -121,54 +121,95 @@ elif menu == "🛠️ Gestion":
         edited_df.to_sql('prestations', conn, if_exists='replace', index=False)
         st.success("Données mises à jour !"); st.rerun()
 
-# --- 4. PARAMÈTRES (IMPORT CSV & MAINTENANCE) ---
+# --- 4. PARAMÈTRES (IMPORT CSV & FONCTIONNALITÉS) ---
 elif menu == "⚙️ Paramètres":
-    st.header("⚙️ Configuration")
+    st.header("⚙️ Configuration & Outils")
     conn = get_connection()
+    
+    # Création des onglets
     t_maint, t_lists, t_csv = st.tabs(["💾 Maintenance", "👥 Listes & Couleurs", "📥 Import CSV"])
     
     with t_maint:
+        st.subheader("Sauvegarde et Restauration")
         c1, c2 = st.columns(2)
         with c1:
             if os.path.exists(DB_PATH):
                 with open(DB_PATH, "rb") as f:
-                    st.download_button("📥 Exporter la base (.db)", f, f"backup_gv2_{DATE_FILE}.db")
+                    st.download_button("📥 Exporter la base actuelle (.db)", f, f"backup_gv2_{DATE_FILE}.db", use_container_width=True)
         with c2:
-            up_db = st.file_uploader("Restaurer une base (.db)", type="db")
-            if up_db and st.button("🚀 Lancer Restauration"):
+            up_db = st.file_uploader("Restaurer une ancienne base (.db)", type="db")
+            if up_db and st.button("🚀 Lancer Restauration", use_container_width=True):
                 confirm_restore_dialog(up_db)
 
+    with t_lists:
+        st.subheader("Gestion des Couleurs")
+        col1, col2 = st.columns(2)
+        for i, (title, table, d_col) in enumerate([("Collaborateurs", "collaborateurs", "#3498db"), ("Clients", "clients", "#e67e22")]):
+            with [col1, col2][i]:
+                st.write(f"**{title}**")
+                # Formulaire d'ajout manuel
+                with st.form(f"add_{table}", clear_on_submit=True):
+                    new_n = st.text_input(f"Ajouter {title[:-1]}")
+                    if st.form_submit_button("Ajouter"):
+                        if new_n:
+                            color = FORCED_COLORS.get(new_n.strip(), d_col)
+                            conn.execute(f"INSERT OR IGNORE INTO {table} (nom, couleur) VALUES (?,?)", (new_n.strip(), color))
+                            conn.commit(); st.rerun()
+                
+                # Liste avec Color Picker
+                for r in conn.execute(f"SELECT id, nom, couleur FROM {table} ORDER BY nom").fetchall():
+                    c = st.columns([3, 1, 1])
+                    c[0].write(r[1])
+                    nc = c[1].color_picker("Col", r[2], key=f"c_{table}_{r[0]}", label_visibility="collapsed")
+                    if nc != r[2]:
+                        conn.execute(f"UPDATE {table} SET couleur=? WHERE id=?", (nc, r[0]))
+                        conn.commit(); st.rerun()
+                    if c[2].button("🗑️", key=f"del_{table}_{r[0]}"):
+                        conn.execute(f"DELETE FROM {table} WHERE id=?", (r[0],))
+                        conn.commit(); st.rerun()
+
     with t_csv:
-        st.subheader("Importation CSV")
-        up_csv = st.file_uploader("Fichier CSV (Séparateur ;)", type="csv")
+        st.subheader("📥 Importation de données (CSV)")
+        st.markdown("""
+        **Format requis :** Séparateur point-virgule (`;`).  
+        Colonnes attendues : *Date, collab, Nom du client, Description, Temps de travail, Tarif horaire client, Facturation horaire client, Tarif horaire interne GV2, Facturation interne GV2.*
+        """)
+        up_csv = st.file_uploader("Choisir le fichier CSV", type="csv")
         if up_csv:
             df_raw = pd.read_csv(up_csv, sep=';', engine='python')
-            mapping = {'date': 'Date', 'collab': 'collab', 'client': 'Nom du client', 'description': 'Description', 'mission_ref': 'Référence de mission', 'temps': 'Temps de travail', 'tarif_client': 'Tarif horaire client', 'fact_client': 'Facturation horaire client', 'tarif_interne': 'Tarif horaire interne GV2', 'fact_interne': 'Facturation interne GV2'}
-            df_imp = df_raw[[v for v in mapping.values() if v in df_raw.columns]].rename(columns={v: k for k, v in mapping.items()})
+            mapping = {
+                'date': 'Date', 'collab': 'collab', 'client': 'Nom du client', 
+                'description': 'Description', 'mission_ref': 'Référence de mission', 
+                'temps': 'Temps de travail', 'tarif_client': 'Tarif horaire client', 
+                'fact_client': 'Facturation horaire client', 
+                'tarif_interne': 'Tarif horaire interne GV2', 'fact_interne': 'Facturation interne GV2'
+            }
+            # Filtrer les colonnes présentes
+            cols_to_use = [v for v in mapping.values() if v in df_raw.columns]
+            df_imp = df_raw[cols_to_use].rename(columns={v: k for k, v in mapping.items()})
             
-            if st.button("✅ Lancer l'importation"):
-                # Nettoyage des formats
+            if st.button("🚀 Lancer l'importation et synchroniser les couleurs"):
+                # 1. Nettoyage
                 if 'date' in df_imp.columns: df_imp['date'] = df_imp['date'].astype(str).str.replace('-', '/')
                 for col in ['temps', 'tarif_client', 'fact_client', 'tarif_interne', 'fact_interne']:
                     if col in df_imp.columns:
                         df_imp[col] = df_imp[col].astype(str).str.replace('€', '').str.replace(',', '.').str.replace('\xa0', '').str.strip()
                         df_imp[col] = pd.to_numeric(df_imp[col], errors='coerce').fillna(0)
                 
-                # Auto-sync des clients/collabs avec couleurs imposées
-                for c in df_imp['collab'].unique(): conn.execute("INSERT OR IGNORE INTO collaborateurs (nom, couleur) VALUES (?,?)", (str(c), FORCED_COLORS.get(str(c), "#3498db")))
-                for cl in df_imp['client'].unique(): conn.execute("INSERT OR IGNORE INTO clients (nom, couleur) VALUES (?,?)", (str(cl), FORCED_COLORS.get(str(cl), "#e67e22")))
+                # 2. Création automatique des Clients/Collabs s'ils n'existent pas
+                if 'collab' in df_imp.columns:
+                    for c in df_imp['collab'].unique():
+                        name = str(c).strip()
+                        conn.execute("INSERT OR IGNORE INTO collaborateurs (nom, couleur) VALUES (?,?)", 
+                                     (name, FORCED_COLORS.get(name, "#3498db")))
+                if 'client' in df_imp.columns:
+                    for cl in df_imp['client'].unique():
+                        name = str(cl).strip()
+                        conn.execute("INSERT OR IGNORE INTO clients (nom, couleur) VALUES (?,?)", 
+                                     (name, FORCED_COLORS.get(name, "#e67e22")))
                 
+                # 3. Insertion des prestations
                 df_imp.to_sql('prestations', conn, if_exists='append', index=False)
-                conn.commit(); st.success("Import réussi !"); st.rerun()
-
-    with t_lists:
-        # Gestion manuelle des couleurs
-        col1, col2 = st.columns(2)
-        for i, (title, table, d_col) in enumerate([("Collaborateurs", "collaborateurs", "#3498db"), ("Clients", "clients", "#e67e22")]):
-            with [col1, col2][i]:
-                st.subheader(title)
-                for r in conn.execute(f"SELECT id, nom, couleur FROM {table} ORDER BY nom").fetchall():
-                    c = st.columns([3, 1])
-                    nc = c[1].color_picker("Col", r[2], key=f"c_{table}_{r[0]}", label_visibility="collapsed")
-                    if nc != r[2]: conn.execute(f"UPDATE {table} SET couleur=? WHERE id=?", (nc, r[0])); conn.commit(); st.rerun()
-                    c[0].write(r[1])
+                conn.commit()
+                st.success(f"Importation terminée : {len(df_imp)} lignes ajoutées !")
+                st.balloons(); st.rerun()
