@@ -7,7 +7,7 @@ import re
 import os
 
 # --- CONFIGURATION & BDD ---
-# On utilise le logo comme icône de l'onglet du navigateur
+# Configuration de la page avec le logo en icône d'onglet
 st.set_page_config(
     page_title="GV2 Management System", 
     layout="wide", 
@@ -62,7 +62,7 @@ def confirm_delete_dialog(ids_to_delete):
     c1, c2 = st.columns(2)
     if c1.button("🔥 Oui, supprimer", type="primary", use_container_width=True):
         conn = get_connection()
-        conn.exec_emany("DELETE FROM prestations WHERE id = ?", [(x,) for x in ids_to_delete])
+        conn.executemany("DELETE FROM prestations WHERE id = ?", [(x,) for x in ids_to_delete])
         conn.commit()
         st.success("Suppressions effectuées.")
         st.rerun()
@@ -71,11 +71,11 @@ def confirm_delete_dialog(ids_to_delete):
         st.rerun()
 
 # --- BARRE LATÉRALE (SIDEBAR) ---
-# Affichage du logo en haut de la sidebar
+# Affichage du logo
 if os.path.exists("logo_gv2.png"):
     st.sidebar.image("logo_gv2.png", use_container_width=True)
 else:
-    st.sidebar.error("Logo non trouvé (logo_gv2.png)")
+    st.sidebar.warning("Logo 'logo_gv2.png' non trouvé.")
 
 st.sidebar.markdown(f"### 🛠️ GV2 Management")
 st.sidebar.caption(f"**Version :** {VERSION} | **Date :** {TODAY}")
@@ -244,9 +244,14 @@ elif menu == "⚙️ Paramètres":
             try:
                 df_raw = pd.read_csv(file, sep=';', encoding='utf-8').fillna("/")
                 for p in df_raw['collab'].unique():
-                    if p != "/": conn.execute("INSERT OR IGNORE INTO collaborateurs (nom, couleur) VALUES (?,?)", (str(p), FORCED_COLORS.get(p, "#cccccc")))
+                    if p != "/": 
+                        conn.execute("INSERT OR IGNORE INTO collaborateurs (nom, couleur) VALUES (?,?)", (str(p), FORCED_COLORS.get(p, "#cccccc")))
+                
                 for c in df_raw['Nom du client'].unique():
-                    if c != "/": conn.execute("INSERT OR IGNORE INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (str(c), 80.0, "#999999")))
+                    if c != "/": 
+                        # Ligne corrigée (parenthèse finale supprimée)
+                        conn.execute("INSERT OR IGNORE INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (str(c), 80.0, "#999999"))
+                
                 mapping = {'Date':'date', 'collab':'collab', 'Nom du client':'client', 'Description':'description', 'Temps de travail':'temps', 'Facturation horaire client':'fact_client', 'Facturation interne GV2':'fact_interne'}
                 df_f = df_raw.rename(columns=mapping)
                 df_f['date'] = df_f['date'].apply(lambda d: pd.to_datetime(d, dayfirst=True).strftime("%d/%m/%Y") if d != "/" else "/")
@@ -260,5 +265,28 @@ elif menu == "⚙️ Paramètres":
 # --- ONGLET 5 : INFO & AIDE ---
 elif menu == "ℹ️ Info & Aide":
     st.header("ℹ️ Informations sur le Système")
-    st.markdown("Bienvenue dans le système de gestion **GV2 Management**...")
-    # ... (Le reste du texte de l'aide reste identique)
+    
+    st.markdown("""
+    Bienvenue dans le système de gestion **GV2 Management**. Cet outil est conçu pour centraliser le suivi des prestations, 
+    analyser la rentabilité et simplifier l'encodage collaboratif.
+    """)
+    
+    with st.expander("🚀 Fonctionnalités Principales", expanded=True):
+        st.markdown("""
+        * **📝 Encodage Sécurisé** : Saisie des prestations avec vérification en deux étapes pour éviter les erreurs. Les champs sont vides par défaut pour forcer une sélection consciente.
+        * **📊 Dashboard Analytique** : Visualisation en temps réel du Chiffre d'Affaires et des heures prestées par client et par collaborateur.
+        * **🔍 Filtrage Avancé** : Analyse précise par année, mois, client ou collaborateur avec mise à jour instantanée des indicateurs (KPIs).
+        * **🛠️ Gestion des Données** : Tableur interactif permettant de modifier ou de supprimer des prestations existantes avec confirmation de sécurité.
+        * **⚙️ Paramétrage Personnalisé** : Gestion des listes de clients et collaborateurs avec attribution de couleurs spécifiques pour les graphiques.
+        * **📥 Import/Export** : Exportation des données filtrées vers CSV et importation massive de données historiques via fichier Excel/CSV.
+        """)
+    
+    with st.expander("💡 Astuces d'utilisation"):
+        st.markdown("""
+        1.  **Couleurs** : Changez la couleur d'un client dans 'Paramètres' pour qu'il soit plus reconnaissable dans les graphiques.
+        2.  **Export** : Utilisez les filtres du Dashboard avant de cliquer sur 'Exporter' pour n'obtenir que les données nécessaires à votre facturation.
+        3.  **Suppression** : En cas d'erreur massive, utilisez la colonne 'Suppr' dans l'onglet 'Gestion' pour traiter plusieurs lignes d'un coup.
+        """)
+    
+    st.divider()
+    st.info(f"**GV2 Management System** - Version {VERSION} | Développé pour une gestion agile du temps et du CA.")
