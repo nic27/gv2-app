@@ -4,7 +4,6 @@ import sqlite3
 import plotly.express as px
 from datetime import datetime
 import os
-import io
 
 # --- CONFIGURATION & BDD ---
 st.set_page_config(page_title="GV2 Management System", layout="wide", page_icon="📊")
@@ -109,7 +108,8 @@ elif menu == "📊 Dashboard":
     df = pd.read_sql("SELECT * FROM prestations", get_connection())
     cmap = get_color_map()
     if not df.empty:
-        df['date_dt'] = pd.to_datetime(df['date'], format='%d/%m/%Y', dayfirst=True)
+        df['date_dt'] = pd.to_datetime(df['date'], format='%d/%m/%Y', dayfirst=True, errors='coerce')
+        df = df.dropna(subset=['date_dt'])
         df['Année'] = df['date_dt'].dt.year
         df['Mois_Label'] = df['date_dt'].dt.strftime('%m/%Y')
         
@@ -152,7 +152,7 @@ elif menu == "🛠️ Gestion":
         if not edited[edited['🗑️']].empty and c2.button("🔥 Supprimer"):
             confirm_delete_dialog(edited[edited['🗑️']]['id'].tolist())
 
-# --- 4. PARAMÈTRES (IMPORT NETTOYÉ) ---
+# --- 4. PARAMÈTRES (IMPORT AVEC MAPPING) ---
 elif menu == "⚙️ Paramètres":
     st.header("⚙️ Configuration")
     conn = get_connection()
@@ -196,37 +196,57 @@ elif menu == "⚙️ Paramètres":
                 if cols[2].button("🗑️", key=f"dl_{r[0]}"): conn.execute("DELETE FROM clients WHERE id=?", (r[0],)); conn.commit(); st.rerun()
 
     with tab_csv:
-        st.subheader("📥 Importation CSV (Nettoyage automatique)")
-        st.info("Colonnes requises : date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne")
-        up_csv = st.file_uploader("Choisir CSV", type="csv")
+        st.subheader("📥 Importation CSV GV2")
+        up_csv = st.file_uploader("Choisir le fichier CSV", type="csv")
         if up_csv:
-            # Nettoyage automatique du BOM et des espaces dans les noms de colonnes
             df_imp = pd.read_csv(up_csv, sep=None, engine='python')
-            df_imp.columns = df_imp.columns.str.strip().str.lower().str.replace('﻿', '') 
             
-            st.write("Colonnes détectées :", list(df_imp.columns))
+            # --- MAPPING INTELLIGENT ---
+            # On définit une correspondance entre les colonnes du CSV et celles de la DB
+            mapping = {
+                'date': ['date', 'Date'],
+                'collab': ['collab', 'Collab', 'Collaborateur'],
+                'client': ['client', 'Client', 'Nom du client'],
+                'description': ['description', 'Description'],
+                'mission_ref': ['mission_ref', 'Référence de mission', 'Référence mission'],
+                'temps': ['temps', 'Temps', 'Temps de travail'],
+                'tarif_client': ['tarif_client', 'Tarif horaire client', 'Tarif Client'],
+                'fact_client': ['fact_client', 'Facturation horaire client', 'Fact Client'],
+                'tarif_interne': ['tarif_interne', 'Tarif horaire interne GV2', 'Tarif Interne'],
+                'fact_interne': ['fact_interne', 'Facturation interne GV2', 'Fact Interne']
+            }
+            
+            # Application du renommage
+            new_cols = {}
+            for db_col, csv_candidates in mapping.items():
+                for candidate in csv_candidates:
+                    if candidate in df_imp.columns:
+                        new_cols[candidate] = db_col
+            
+            df_imp = df_imp.rename(columns=new_cols)
+            
+            # Nettoyage des montants (suppression des "€" et conversion numérique)
+            for col in ['tarif_client', 'fact_client', 'tarif_interne', 'fact_interne']:
+                if col in df_imp.columns and df_imp[col].dtype == 'object':
+                    df_imp[col] = df_imp[col].str.replace('€', '').str.replace(',', '.').str.strip().astype(float)
+
+            st.write("Aperçu de l'import (colonnes mappées) :")
             st.dataframe(df_imp.head())
             
-            if st.button("✅ Lancer l'importation"):
+            if st.button("🚀 Valider l'importation vers la DB"):
                 try:
-                    # On ne garde que les colonnes qui existent dans la BDD pour éviter les erreurs
-                    cols_bdd = ['date', 'collab', 'client', 'description', 'mission_ref', 'temps', 'tarif_client', 'fact_client', 'tarif_interne', 'fact_interne']
-                    df_final = df_imp[cols_bdd]
+                    cols_to_keep = [c for c in mapping.keys() if c in df_imp.columns]
+                    df_final = df_imp[cols_to_keep]
                     df_final.to_sql('prestations', conn, if_exists='append', index=False)
-                    st.success(f"Importation de {len(df_final)} lignes réussie !"); st.rerun()
+                    st.success(f"Réussi : {len(df_final)} lignes ajoutées !"); st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur de structure : {e}")
+                    st.error(f"Erreur technique : {e}")
 
 # --- 5. AIDE & INFOS ---
 elif menu == "ℹ️ Aide & Infos":
     st.header("ℹ️ Aide & Fonctionnalités")
     st.markdown("""
-    ### 🚀 Liste des fonctionnalités (Version 1.0)
-    * **📝 Encodage** : Saisie propre avec réinitialisation complète des champs après validation.
-    * **📊 Dashboard** : Filtres croisés par **Année, Mois (chronologique), Collab et Client**.
-    * **📥 Import/Export** : 
-        * Export CSV filtré (Dashboard).
-        * Backup complet daté `.db` (Paramètres).
-        * **Import CSV** avec nettoyage automatique des caractères invisibles (BOM).
-    * **🛠️ Gestion** : Modification directe et suppression groupée.
+    * **Dashboard** : Filtres chronologiques. Export CSV de la sélection.
+    * **Gestion** : Cochez la case 🗑️ puis cliquez sur "Supprimer" pour nettoyer la DB.
+    * **Import CSV** : Le système reconnaît automatiquement vos colonnes (ex: "Nom du client" devient "client").
     """)
