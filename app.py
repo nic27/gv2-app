@@ -13,7 +13,7 @@ st.set_page_config(
     page_icon="logo_gv2.png"
 )
 
-VERSION = "1.4"
+VERSION = "1.5"
 TODAY = datetime.now().strftime("%d/%m/%Y")
 
 FORCED_COLORS = {
@@ -108,15 +108,45 @@ if menu == "📝 Encodage":
             conn.execute("INSERT INTO prestations (date, collab, client, description, mission_ref, temps, tarif_client, fact_client, tarif_interne, fact_interne) VALUES (?,?,?,?,?,?,?,?,?,?)", (d['date'], d['collab'], d['client'], d['description'], d['mission_ref'], d['temps'], d['tarif_client'], d['fact_client'], d['tarif_interne'], d['fact_interne']))
             conn.commit(); st.success("Enregistré !"); del st.session_state.confirm_data; st.rerun()
 
-# --- ONGLET 2 : DASHBOARD ---
+# --- ONGLET 2 : DASHBOARD (RESTAURÉ AVEC FILTRES) ---
 elif menu == "📊 Dashboard":
     st.header("📊 Dashboard Analytique")
     df = pd.read_sql("SELECT * FROM prestations", get_connection())
     cmap = get_color_map()
+    
     if not df.empty:
-        st.metric("Total CA HT", f"{df['fact_client'].sum():,.2f} €")
-        st.plotly_chart(px.bar(df.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=cmap, title="CA par Client"), use_container_width=True)
-    else: st.info("Aucune donnée disponible.")
+        # Préparation des dates pour les filtres
+        df['date_dt'] = pd.to_datetime(df['date'], format='%d/%m/%Y', dayfirst=True, errors='coerce')
+        df['Année'] = df['date_dt'].dt.strftime('%Y')
+        df['Mois'] = df['date_dt'].dt.strftime('%m/%Y')
+
+        st.sidebar.header("🔍 Filtres d'analyse")
+        sel_years = st.sidebar.multiselect("Années", sorted(df['Année'].dropna().unique(), reverse=True), default=df['Année'].dropna().unique())
+        mask_y = df['Année'].isin(sel_years)
+        sel_months = st.sidebar.multiselect("Mois", sorted(df[mask_y]['Mois'].dropna().unique(), reverse=True), default=df[mask_y]['Mois'].dropna().unique())
+        sel_collabs = st.sidebar.multiselect("Collaborateurs", sorted(df['collab'].unique()), default=df['collab'].unique())
+        sel_clients = st.sidebar.multiselect("Clients", sorted(df['client'].unique()), default=df['client'].unique())
+
+        # Application des filtres
+        df_f = df[(df['Année'].isin(sel_years)) & (df['Mois'].isin(sel_months)) & (df['collab'].isin(sel_collabs)) & (df['client'].isin(sel_clients))]
+
+        if not df_f.empty:
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Total Heures", f"{df_f['temps'].sum():.2f} h")
+            k2.metric("Total CA HT", f"{df_f['fact_client'].sum():,.2f} €")
+            k3.metric("Marge GV2", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
+
+            st.subheader("🏢 CA par Client (€)")
+            st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=cmap, text_auto='.2s'), use_container_width=True)
+            
+            st.subheader("👥 CA par Collaborateur (€)")
+            st.plotly_chart(px.bar(df_f.groupby('collab')['fact_client'].sum().reset_index(), x='collab', y='fact_client', color='collab', color_discrete_map=cmap, text_auto='.2s'), use_container_width=True)
+
+            csv = df_f.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+            st.download_button("📥 Exporter cette sélection (CSV)", csv, f"export_gv2_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+        else:
+            st.warning("Aucune donnée ne correspond à vos filtres.")
+    else: st.info("La base de données est vide.")
 
 # --- ONGLET 3 : GESTION ---
 elif menu == "🛠️ Gestion":
@@ -140,17 +170,15 @@ elif menu == "⚙️ Paramètres":
     st.header("⚙️ Configuration & Sauvegarde")
     conn = get_connection()
     
-    # --- SECTION SAUVEGARDE DB ---
     with st.container(border=True):
         st.subheader("💾 Sauvegarde de sécurité (.db)")
         if os.path.exists("gv2_data.db"):
             with open("gv2_data.db", "rb") as f:
-                st.download_button("📥 Télécharger la base de données complète", f, f"backup_gv2_{datetime.now().strftime('%Y%m%d')}.db", "application/x-sqlite3", use_container_width=True)
+                st.download_button("📥 Télécharger la base de données SQLite", f, f"backup_gv2_{datetime.now().strftime('%Y%m%d')}.db", "application/x-sqlite3", use_container_width=True)
 
     t1, t2 = st.tabs(["👥 Listes & Couleurs", "📥 Import CSV"])
     
     with t1:
-        # Ajout Collab/Client
         c_col, c_cli = st.columns(2)
         with c_col:
             with st.form("add_collab", clear_on_submit=True):
@@ -164,7 +192,6 @@ elif menu == "⚙️ Paramètres":
                     if n_cl: conn.execute("INSERT INTO clients (nom, tarif_defaut, couleur) VALUES (?,?,?)", (n_cl.strip(), 80.0, "#e67e22")); conn.commit(); st.rerun()
         
         st.divider()
-        # Gestion Couleurs et Suppression
         for title, table in [("Collaborateurs", "collaborateurs"), ("Clients", "clients")]:
             st.subheader(title)
             data = conn.execute(f"SELECT id, nom, couleur FROM {table} ORDER BY nom").fetchall()
@@ -178,7 +205,7 @@ elif menu == "⚙️ Paramètres":
 
     with t2:
         st.subheader("Importation Historique")
-        file = st.file_uploader("Choisir un fichier CSV (Séparateur ;)", type="csv")
+        file = st.file_uploader("Choisir un fichier CSV", type="csv")
         if file and st.button("🚀 Lancer l'importation"):
             try:
                 df_raw = pd.read_csv(file, sep=';', encoding='utf-8').fillna("/")
@@ -195,5 +222,5 @@ elif menu == "⚙️ Paramètres":
                 
                 cols_ok = ['date', 'collab', 'client', 'description', 'temps', 'fact_client', 'fact_interne']
                 df_f[[c for c in cols_ok if c in df_f.columns]].to_sql('prestations', conn, if_exists='append', index=False)
-                conn.commit(); st.success("✅ Importation terminée avec succès !"); st.rerun()
+                conn.commit(); st.success("✅ Importation terminée !"); st.rerun()
             except Exception as e: st.error(f"Erreur : {e}")
