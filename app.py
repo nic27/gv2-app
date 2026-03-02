@@ -12,7 +12,6 @@ st.set_page_config(page_title="GV2 Management System", layout="wide", page_icon=
 VERSION = "1.0"
 DB_PATH = 'gv2_data.db'
 
-# Couleurs par défaut pour la cohérence visuelle
 FORCED_COLORS = {
     "JC": "#E22F2F", "Ludo": "#2A33C3", "Nico": "#20DC46",
     "Skydiving Promotion": "#161515", "Sourse": "#C03BD6", "Stemme Belgium": "#999999"
@@ -126,9 +125,19 @@ elif menu == "📊 Dashboard":
             k2.metric("CA HT", f"{df_f['fact_client'].sum():,.2f} €")
             k3.metric("Marge", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
             
-            st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=get_dynamic_colors()), use_container_width=True)
+            # --- GRAPHIQUES ---
+            c1, c2 = st.columns(2)
+            with c1:
+                st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), 
+                                       x='client', y='fact_client', color='client', 
+                                       title="CA par Client (€)", color_discrete_map=get_dynamic_colors()), use_container_width=True)
+            with c2:
+                # NOUVEAU GRAPHIQUE : Collab par Client
+                st.plotly_chart(px.bar(df_f.groupby(['client', 'collab'])['temps'].sum().reset_index(), 
+                                       x='client', y='temps', color='collab', barmode='group',
+                                       title="Heures par Collaborateur et Client", color_discrete_map=get_dynamic_colors()), use_container_width=True)
 
-            st.subheader("📋 Récapitulatif par Société")
+            st.subheader("📋 Récapitulatif détaillé")
             recap = df_f.groupby(['client', 'collab']).agg({'temps': 'sum', 'fact_client': 'sum'}).reset_index()
             st.dataframe(recap, use_container_width=True, hide_index=True)
 
@@ -159,13 +168,12 @@ elif menu == "🛠️ Gestion":
 
 # --- 4. PARAMÈTRES ---
 elif menu == "⚙️ Paramètres":
-    st.header("⚙️ Paramètres du système")
+    st.header("⚙️ Paramètres")
     t_lists, t_maint, t_csv = st.tabs(["👥 Listes & Couleurs", "💾 Base de données", "📥 Import CSV"])
     
     with t_lists:
         conn = get_connection()
         col1, col2 = st.columns(2)
-        # Gestion Collaborateurs et Clients
         for i, (title, table, d_col) in enumerate([("Collaborateurs", "collaborateurs", "#3498db"), ("Clients", "clients", "#e67e22")]):
             with [col1, col2][i]:
                 st.subheader(title)
@@ -176,8 +184,6 @@ elif menu == "⚙️ Paramètres":
                             conn.execute(f"INSERT OR IGNORE INTO {table} (nom, couleur) VALUES (?,?)", 
                                          (new_n.strip(), FORCED_COLORS.get(new_n.strip(), d_col)))
                             conn.commit(); st.rerun()
-                
-                # Liste avec Color Picker et Suppression
                 for r in conn.execute(f"SELECT id, nom, couleur FROM {table} ORDER BY nom").fetchall():
                     c = st.columns([3, 1, 1])
                     c[0].write(r[1])
@@ -218,12 +224,10 @@ elif menu == "⚙️ Paramètres":
 
 # --- 5. INFO ---
 elif menu == "ℹ️ Info":
-    st.header("ℹ️ Aide & Informations")
+    st.header("ℹ️ Aide & Info")
     st.markdown(f"""
     **GV2 Management System v{VERSION}**
-    
-    * **📝 Encodage** : Saisie des prestations journalières.
-    * **📊 Dashboard** : Filtres croisés et export CSV de la sélection.
-    * **🛠️ Gestion** : Modification des lignes et suppression sécurisée (colonne 'Sélection').
-    * **⚙️ Paramètres** : Gestion des listes (Clients/Collabs), couleurs personnalisées et imports/exports de secours.
+    * **Dashboard** : Nouveau graphique comparatif Collaborateurs/Clients ajouté.
+    * **Gestion** : Modification directe et suppression sécurisée par sélection.
+    * **Paramètres** : Gestion centralisée des listes, couleurs et imports/exports (DB & CSV).
     """)
