@@ -9,7 +9,6 @@ import os
 st.set_page_config(page_title="GV2 Management System", layout="wide", page_icon="📊")
 
 VERSION = "1.0"
-DATE_FILE = datetime.now().strftime("%d_%m_%Y")
 DB_PATH = 'gv2_data.db'
 
 FORCED_COLORS = {
@@ -41,13 +40,23 @@ def get_dynamic_colors():
     db_colors = pd.concat([c_df, l_df]).set_index('nom')['couleur'].to_dict()
     return {**db_colors, **FORCED_COLORS}
 
-# --- POP-UP SÉCURITÉ ---
-@st.dialog("⚠️ RESTAURATION")
-def confirm_restore_dialog(uploaded_file):
-    st.error("ATTENTION : Cela écrasera TOUTES vos données actuelles.")
-    if st.button("🔥 CONFIRMER L'IMPORTATION DB", use_container_width=True):
-        with open(DB_PATH, "wb") as f: f.write(uploaded_file.getbuffer())
-        st.success("Base restaurée !"); st.rerun()
+# --- DIALOGUE DE CONFIRMATION DE SUPPRESSION ---
+@st.dialog("Confirmer la suppression")
+def confirm_delete_dialog(ids_to_delete):
+    st.warning(f"⚠️ Êtes-vous sûr de vouloir supprimer définitivement {len(ids_to_delete)} prestation(s) ?")
+    st.write("Cette action est irréversible.")
+    c1, c2 = st.columns(2)
+    if c1.button("🔥 Oui, supprimer", type="primary", use_container_width=True):
+        conn = get_connection()
+        cursor = conn.cursor()
+        query = f"DELETE FROM prestations WHERE id IN ({','.join(['?']*len(ids_to_delete))})"
+        cursor.execute(query, ids_to_delete)
+        conn.commit()
+        conn.close()
+        st.success("Suppression réussie !")
+        st.rerun()
+    if c2.button("Annuler", use_container_width=True):
+        st.rerun()
 
 # --- NAVIGATION ---
 st.sidebar.markdown(f"### 🛠️ GV2 Management")
@@ -84,150 +93,109 @@ elif menu == "📊 Dashboard":
     st.header("📊 Dashboard d'Analyse")
     df = pd.read_sql("SELECT * FROM prestations", get_connection())
     if not df.empty:
-        # Nettoyage et préparation des dates
-        df['date_dt'] = pd.to_datetime(df['date'].str.replace('-', '/'), format='%d/%m/%Y', dayfirst=True, errors='coerce')
+        df['date_dt'] = pd.to_datetime(df['date'], format='%d/%m/%Y', dayfirst=True, errors='coerce')
         df = df.dropna(subset=['date_dt'])
         df['Année'] = df['date_dt'].dt.year
         df['Mois_Label'] = df['date_dt'].dt.strftime('%m/%Y')
         df['Mois_Tri'] = df['date_dt'].dt.strftime('%Y-%m')
 
-        # --- FILTRES SIDEBAR ---
         st.sidebar.header("🔍 Filtres")
         sel_y = st.sidebar.multiselect("Années", sorted(df['Année'].unique(), reverse=True), default=df['Année'].unique())
-        
         mask_y = df[df['Année'].isin(sel_y)]
         available_months = mask_y.sort_values('Mois_Tri', ascending=False)['Mois_Label'].unique().tolist()
         sel_m = st.sidebar.multiselect("Mois", available_months, default=available_months)
-        
         sel_co = st.sidebar.multiselect("Collaborateurs", sorted(df['collab'].unique()), default=df['collab'].unique())
         sel_cl = st.sidebar.multiselect("Clients", sorted(df['client'].unique()), default=df['client'].unique())
         
-        # Application des filtres
         df_f = df[(df['Année'].isin(sel_y)) & (df['Mois_Label'].isin(sel_m)) & (df['collab'].isin(sel_co)) & (df['client'].isin(sel_cl))]
         
         if not df_f.empty:
-            # Métriques
             k1, k2, k3 = st.columns(3)
             k1.metric("Heures", f"{df_f['temps'].sum():.1f}h")
             k2.metric("CA HT", f"{df_f['fact_client'].sum():,.2f} €")
             k3.metric("Marge", f"{(df_f['fact_client'].sum() - df_f['fact_interne'].sum()):,.2f} €")
             
-            # Graphique
-            st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), 
-                                   x='client', y='fact_client', color='client', 
-                                   title="Chiffre d'Affaires par Client",
-                                   color_discrete_map=get_dynamic_colors()), use_container_width=True)
+            st.plotly_chart(px.bar(df_f.groupby('client')['fact_client'].sum().reset_index(), x='client', y='fact_client', color='client', color_discrete_map=get_dynamic_colors()), use_container_width=True)
 
-            # --- TABLEAU RÉCAPITULATIF (NOUVEAU) ---
-            st.subheader("📋 Récapitulatif détaillé par sélection")
-            recap = df_f.groupby(['client', 'collab']).agg({
-                'temps': 'sum',
-                'fact_client': 'sum',
-                'fact_interne': 'sum'
-            }).reset_index()
-            
-            # Calcul de la marge par ligne pour le tableau
+            # --- TABLEAU RÉCAPITULATIF PAR SOCIÉTÉ ---
+            st.subheader("📋 Récapitulatif par Société / Collab")
+            recap = df_f.groupby(['client', 'collab']).agg({'temps': 'sum', 'fact_client': 'sum', 'fact_interne': 'sum'}).reset_index()
             recap['Marge (€)'] = recap['fact_client'] - recap['fact_interne']
-            recap.columns = ['Client', 'Collaborateur', 'Total Heures', 'Total Facturé (€)', 'Coût Interne (€)', 'Marge (€)']
-            
-            st.dataframe(recap.style.format(subset=['Total Facturé (€)', 'Coût Interne (€)', 'Marge (€)'], formatter="{:.2f} €"), 
-                         use_container_width=True, hide_index=True)
-            
-            # Bouton Export CSV des données filtrées
-            csv = df_f.drop(columns=['date_dt', 'Année', 'Mois_Label', 'Mois_Tri']).to_csv(index=False, sep=';', encoding='utf-8-sig')
-            st.download_button("📥 Exporter la sélection (CSV)", csv, f"export_gv2_{DATE_FILE}.csv", "text/csv")
+            st.dataframe(recap, use_container_width=True, hide_index=True)
 
-        else: st.warning("Aucun résultat pour les filtres sélectionnés.")
-    else: st.info("La base de données est vide. Veuillez encoder des prestations ou importer un CSV.")
+            # Exportation CSV des filtres
+            csv = df_f.to_csv(index=False, sep=';', encoding='utf-8-sig')
+            st.download_button("📥 Exporter cette sélection (CSV)", csv, "export_filtre.csv", "text/csv")
+        else: st.warning("Aucune donnée pour ces filtres.")
+    else: st.info("Base vide.")
 
-# --- 3. GESTION ---
+# --- 3. GESTION (SUPPRESSION CORRIGÉE) ---
 elif menu == "🛠️ Gestion":
-    st.header("🛠️ Gestion des données")
+    st.header("🛠️ Gestion & Suppression")
     conn = get_connection()
     df_g = pd.read_sql("SELECT * FROM prestations ORDER BY id DESC", conn)
-    st.info("💡 Pour supprimer : sélectionnez la ligne et appuyez sur 'Suppr' (clavier) ou modifiez les cellules directement.")
-    edited_df = st.data_editor(df_g, num_rows="dynamic", use_container_width=True, disabled=["id"])
-    if st.button("💾 Sauvegarder les modifications"):
-        edited_df.to_sql('prestations', conn, if_exists='replace', index=False)
-        st.success("Données synchronisées !"); st.rerun()
+    
+    if not df_g.empty:
+        # Ajout d'une colonne de sélection pour la suppression
+        df_g.insert(0, "Sélection", False)
+        
+        st.info("Cochez les cases 'Sélection' pour supprimer des lignes ou modifiez directement les cellules pour mettre à jour.")
+        edited_df = st.data_editor(df_g, use_container_width=True, hide_index=True, disabled=["id"])
+        
+        col_save, col_del = st.columns([1, 1])
+        
+        if col_save.button("💾 Sauvegarder les modifications", use_container_width=True):
+            # On retire la colonne temporaire de sélection avant sauvegarde
+            df_to_save = edited_df.drop(columns=["Sélection"])
+            df_to_save.to_sql('prestations', conn, if_exists='replace', index=False)
+            st.success("Données mises à jour !"); st.rerun()
+            
+        # Logique de suppression
+        to_delete = edited_df[edited_df["Sélection"] == True]
+        if not to_delete.empty:
+            if col_del.button(f"🗑️ Supprimer {len(to_delete)} ligne(s)", type="primary", use_container_width=True):
+                confirm_delete_dialog(to_delete['id'].tolist())
+    else:
+        st.info("Aucune donnée à gérer.")
 
 # --- 4. PARAMÈTRES ---
 elif menu == "⚙️ Paramètres":
-    st.header("⚙️ Paramètres du système")
+    st.header("⚙️ Paramètres")
     conn = get_connection()
-    t_maint, t_lists, t_csv = st.tabs(["💾 Maintenance", "👥 Listes & Couleurs", "📥 Import CSV"])
+    t_maint, t_lists = st.tabs(["💾 Maintenance", "👥 Listes & Couleurs"])
     
     with t_maint:
         if os.path.exists(DB_PATH):
-            with open(DB_PATH, "rb") as f: st.download_button("📥 Télécharger Backup .db", f, f"backup_gv2_{DATE_FILE}.db")
-        up_db = st.file_uploader("Restaurer une base de données (.db)", type="db")
-        if up_db and st.button("🔥 Lancer la restauration"): confirm_restore_dialog(up_db)
-
+            with open(DB_PATH, "rb") as f: st.download_button("📥 Télécharger Backup .db", f, "gv2_backup.db")
+    
     with t_lists:
         col1, col2 = st.columns(2)
-        for i, (title, table, d_col) in enumerate([("Collaborateurs", "collaborateurs", "#3498db"), ("Clients", "clients", "#e67e22")]):
+        for i, (title, table) in enumerate([("Collaborateurs", "collaborateurs"), ("Clients", "clients")]):
             with [col1, col2][i]:
                 st.subheader(title)
                 with st.form(f"add_{table}", clear_on_submit=True):
-                    new_n = st.text_input(f"Ajouter {title[:-1]}")
+                    name = st.text_input(f"Nom {title[:-1]}")
                     if st.form_submit_button("Ajouter"):
-                        if new_n: 
-                            conn.execute(f"INSERT OR IGNORE INTO {table} (nom, couleur) VALUES (?,?)", 
-                                         (new_n.strip(), FORCED_COLORS.get(new_n.strip(), d_col)))
-                            conn.commit(); st.rerun()
-                for r in conn.execute(f"SELECT id, nom, couleur FROM {table} ORDER BY nom").fetchall():
-                    c = st.columns([3, 1, 1])
+                        if name: conn.execute(f"INSERT OR IGNORE INTO {table} (nom, couleur) VALUES (?,?)", (name.strip(), "#3498db")); conn.commit(); st.rerun()
+                # Affichage avec suppression individuelle
+                for r in conn.execute(f"SELECT id, nom FROM {table}").fetchall():
+                    c = st.columns([3, 1])
                     c[0].write(r[1])
-                    nc = c[1].color_picker("C", r[2], key=f"cp_{table}_{r[0]}", label_visibility="collapsed")
-                    if nc != r[2]: 
-                        conn.execute(f"UPDATE {table} SET couleur=? WHERE id=?", (nc, r[0]))
-                        conn.commit(); st.rerun()
-                    if c[2].button("🗑️", key=f"dl_{table}_{r[0]}"): 
-                        conn.execute(f"DELETE FROM {table} WHERE id=?", (r[0]))
-                        conn.commit(); st.rerun()
-
-    with t_csv:
-        st.subheader("📥 Importation massive via CSV")
-        up_csv = st.file_uploader("Choisir un fichier CSV (Séparateur ;)", type="csv")
-        if up_csv:
-            df_raw = pd.read_csv(up_csv, sep=';', engine='python')
-            mapping = {'date': 'Date', 'collab': 'collab', 'client': 'Nom du client', 'description': 'Description', 'mission_ref': 'Référence de mission', 'temps': 'Temps de travail', 'tarif_client': 'Tarif horaire client', 'fact_client': 'Facturation horaire client', 'tarif_interne': 'Tarif horaire interne GV2', 'fact_interne': 'Facturation interne GV2'}
-            df_imp = df_raw[[v for v in mapping.values() if v in df_raw.columns]].rename(columns={v: k for k, v in mapping.items()})
-            if st.button("✅ Valider l'importation"):
-                if 'date' in df_imp.columns: df_imp['date'] = df_imp['date'].astype(str).str.replace('-', '/')
-                for col in ['temps', 'tarif_client', 'fact_client', 'tarif_interne', 'fact_interne']:
-                    if col in df_imp.columns:
-                        df_imp[col] = df_imp[col].astype(str).str.replace('€', '').str.replace(',', '.').str.replace('\xa0', '').str.strip()
-                        df_imp[col] = pd.to_numeric(df_imp[col], errors='coerce').fillna(0)
-                for c in df_imp['collab'].unique(): conn.execute("INSERT OR IGNORE INTO collaborateurs (nom, couleur) VALUES (?,?)", (str(c), FORCED_COLORS.get(str(c), "#3498db")))
-                for cl in df_imp['client'].unique(): conn.execute("INSERT OR IGNORE INTO clients (nom, couleur) VALUES (?,?)", (str(cl), FORCED_COLORS.get(str(cl), "#e67e22")))
-                df_imp.to_sql('prestations', conn, if_exists='append', index=False); conn.commit()
-                st.success("Import réussi !"); st.rerun()
+                    if c[1].button("🗑️", key=f"del_{table}_{r[0]}"):
+                        conn.execute(f"DELETE FROM {table} WHERE id=?", (r[0],)); conn.commit(); st.rerun()
 
 # --- 5. INFO ---
 elif menu == "ℹ️ Info":
-    st.header("ℹ️ Informations & Aide")
+    st.header("ℹ️ Informations Système")
+    st.markdown(f"""
+    **GV2 Management System - Version {VERSION}**
     
-    st.info("Bienvenue dans le système de gestion **GV2 Management**. Cet outil centralise vos prestations et vos analyses financières.")
+    ### Fonctionnalités :
+    * **📝 Encodage** : Enregistrement des prestations avec calcul automatique de la facturation.
+    * **📊 Dashboard** : Analyse visuelle avec filtres croisés (Date, Collab, Client).
+    * **🛠️ Gestion** : Modification en direct des données et suppression sécurisée avec message de confirmation.
+    * **⚙️ Paramètres** : Gestion des bases de données et des listes déroulantes.
+    * **📥 Export** : Extraction des données filtrées au format CSV pour Excel.
     
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.expander("🚀 Fonctionnalités", expanded=True):
-            st.markdown("""
-            - **📝 Encodage** : Saisie rapide des prestations journalières.
-            - **📊 Dashboard** : Analyse multicritères (Temps, CA, Marge).
-            - **🛠️ Gestion** : Modification ou suppression des entrées existantes.
-            - **⚙️ Paramètres** : Personnalisation des listes (Clients/Collabs) et gestion de la base de données.
-            - **📥 Export/Import** : Exportation CSV filtrée et sauvegarde/restauration de la base .db.
-            """)
-    
-    with col2:
-        with st.expander("💡 Astuces Dashboard", expanded=True):
-            st.markdown("""
-            - **Multi-filtres** : Combinez les années, mois et collaborateurs pour des rapports précis.
-            - **Exportation** : Le bouton d'exportation dans le Dashboard génère un fichier CSV correspondant *exactement* à vos filtres actuels.
-            - **Couleurs** : Les couleurs définies dans les Paramètres s'appliquent automatiquement aux graphiques.
-            """)
-    
-    st.divider()
-    st.caption(f"GV2 Management System | Version {VERSION} | Développé pour une gestion agile.")
+    *Développé pour une gestion simplifiée et sécurisée.*
+    """)
